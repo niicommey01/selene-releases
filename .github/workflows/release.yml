@@ -153,6 +153,13 @@ jobs:
           set -euo pipefail
           tag="${{ needs.resolve.outputs.tag }}"
 
+          # download-artifact recreates the uploaded tree, so files land in
+          # nested dirs (artifacts/<name>/...). Flatten to a single dir so
+          # `gh release ... upload/*` only ever sees files.
+          mkdir -p upload
+          find artifacts -type f -exec cp {} upload/ \;
+          echo "Publishing:"; ls -1 upload
+
           cat > /tmp/notes.md <<'EOF'
           ## Install
 
@@ -169,8 +176,8 @@ jobs:
           EOF
 
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber artifacts/*
+            gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber upload/*
           else
             gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
-              --title "Selene $tag" --notes-file /tmp/notes.md artifacts/*
+              --title "Selene $tag" --notes-file /tmp/notes.md upload/*
           fi
