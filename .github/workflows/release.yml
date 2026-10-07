@@ -1,0 +1,166 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build without the leading v (e.g. 0.1.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  SOURCE_REPO: niicommey01/selene
+
+jobs:
+  resolve:
+    name: resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.ver.outputs.tag }}
+    steps:
+      - id: ver
+        shell: bash
+        run: echo "tag=v${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: build (${{ matrix.name }})
+    needs: resolve
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-22.04
+            target: ""
+            args: "--bundles deb,rpm,appimage"
+          - name: linux-arm64
+            os: ubuntu-22.04-arm
+            target: ""
+            args: "--bundles deb,rpm,appimage"
+          - name: windows-x64
+            os: windows-latest
+            target: ""
+            args: "--bundles msi"
+          - name: windows-arm64
+            os: windows-11-arm
+            target: ""
+            args: "--bundles msi"
+          - name: macos-universal
+            os: macos-latest
+            target: "aarch64-apple-darwin,x86_64-apple-darwin"
+            args: "--target universal-apple-darwin --bundles app,dmg"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ needs.resolve.outputs.tag }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+      - name: Check tag matches version
+        shell: bash
+        run: bash scripts/check-version-tag.sh "${{ needs.resolve.outputs.tag }}"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.name }}
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
+            build-essential curl wget file libxdo-dev libssl-dev libgtk-3-dev rpm
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: pnpm tauri build ${{ matrix.args }}
+      - name: Package Linux tarball
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          ver=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          arch=$([ "${{ matrix.name }}" = "linux-arm64" ] && echo arm64 || echo amd64)
+          bash scripts/package-linux-tarball.sh src-tauri/target/release/selene "$arch" "$ver" release-artifacts
+      - name: Package macOS app archive
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          ver=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          mkdir -p release-artifacts
+          tar -czf "release-artifacts/Selene_${ver}_universal.app.tar.gz" \
+            -C src-tauri/target/universal-apple-darwin/release/bundle/macos Selene.app
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          if-no-files-found: error
+          path: |
+            src-tauri/target/**/release/bundle/**/*.deb
+            src-tauri/target/**/release/bundle/**/*.rpm
+            src-tauri/target/**/release/bundle/**/*.AppImage
+            src-tauri/target/**/release/bundle/**/*.msi
+            src-tauri/target/**/release/bundle/**/*.dmg
+            release-artifacts/*
+
+  publish:
+    name: publish
+    needs: [resolve, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${{ needs.resolve.outputs.tag }}"
+
+          cat > /tmp/notes.md <<'EOF'
+          ## Install
+
+          These builds are **unsigned**.
+
+          - **macOS**: right-click the app → Open, or run
+            `xattr -dr com.apple.quarantine /Applications/Selene.app`
+          - **Windows**: on the SmartScreen prompt choose *More info → Run anyway*.
+
+          ### Artifacts
+          - Linux: `.deb`, `.rpm`, `.AppImage`, portable `.tar.gz`
+          - Windows: `.msi`
+          - macOS: `.dmg`, `.app.tar.gz` (universal)
+          EOF
+
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber artifacts/*
+          else
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
+              --title "Selene $tag" --notes-file /tmp/notes.md artifacts/*
+          fi
