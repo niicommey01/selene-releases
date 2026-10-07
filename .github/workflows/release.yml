@@ -170,14 +170,22 @@ jobs:
           - **Windows**: on the SmartScreen prompt choose *More info → Run anyway*.
 
           ### Artifacts
-          - Linux: `.deb`, `.rpm`, `.AppImage`, portable `.tar.gz`
+          - Linux `.deb` / `.rpm`: install with your package manager. They need
+            `webkit2gtk-4.1` and GTK3 at runtime (Debian/Ubuntu: `libwebkit2gtk-4.1-0`;
+            Fedora: `webkit2gtk4.1`).
+          - Linux `.AppImage`: self-contained — `chmod +x` and run.
+          - Linux `.tar.gz`: **not** self-contained; same runtime deps as the
+            `.deb`/`.rpm`, and expects `selene` on your `PATH`.
           - Windows: `.msi`
           - macOS: `.dmg`, `.app.tar.gz` (universal)
           EOF
 
-          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber upload/*
-          else
-            gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
-              --title "Selene $tag" --notes-file /tmp/notes.md upload/*
+          # Create as a draft first, so a failed upload can never expose a
+          # partial public release; publish only once every asset is attached.
+          # The final edit always refreshes the notes (including on re-runs).
+          if ! gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --draft \
+              --title "Selene $tag" --notes-file /tmp/notes.md
           fi
+          gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber upload/*
+          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false --notes-file /tmp/notes.md
