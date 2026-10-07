@@ -79,13 +79,13 @@ jobs:
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get update -o Acquire::Retries=5
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
             build-essential curl wget file libxdo-dev libssl-dev libgtk-3-dev rpm
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
-      - name: Build
+      - name: Configure code signing (only when certificates are present)
         shell: bash
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -96,6 +96,16 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY \
+                   APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID \
+                   WINDOWS_CERTIFICATE WINDOWS_CERTIFICATE_PASSWORD; do
+            val="${!v}"
+            if [ -n "$val" ]; then echo "$v=$val" >> "$GITHUB_ENV"; fi
+          done
+          echo "signing config checked (empty secrets stay unset)"
+      - name: Build
+        shell: bash
         run: pnpm tauri build ${{ matrix.args }}
       - name: Package Linux tarball
         if: runner.os == 'Linux'
